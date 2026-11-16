@@ -760,7 +760,13 @@ with t4:
     st.subheader("⚡ محاكي الصدمات واختبار تحمل الشبكة (Stress Test)")
     sc1, sc2, sc3 = st.columns(3)
     target_c = sc1.selectbox("اختر الكيان للاختبار:", selected, key="stress_c")
-    shock_yr = sc2.slider("سنة حدوث الصدمة:", int(fut[target_c].index[0]), int(fut[target_c].index[-1]), int(fut[target_c].index[0]))
+    min_yr = int(fut[target_c].index[0])
+    max_yr = int(fut[target_c].index[-1])
+    if min_yr < max_yr:
+      shock_yr = sc2.slider("سنة حدوث الصدمة:", min_yr, max_yr, min_yr)
+    else:
+          shock_yr = min_yr
+          sc2.info(f"سنة حدوث الصدمة: {shock_yr}")
     shock_pct = sc3.slider("نسبة الصدمة في الطلب (%):", -20, 30, 12, help="موجب = موجة حر أو طفرة صناعية | سالب = ترشيد طاقة")
 
     base_f = fut[target_c].copy()
