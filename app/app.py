@@ -3,17 +3,10 @@
 import io
 import json
 import os
-import sys
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-# يخلّي models/ و data/ يتلاقوا سواء app.py في المجلد الرئيسي أو جوه مجلد app/ (محلياً وعلى Streamlit Cloud)
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = next((p for p in (_HERE, os.path.dirname(_HERE)) if os.path.isdir(os.path.join(p, "models"))), _HERE)
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-os.chdir(_ROOT)
 from models import lstm_model
 from models import xgboost_model
 from models import prophet
@@ -507,7 +500,7 @@ if others or not has_egy:
 normed = st.checkbox("📈 مؤشر (100 = أول سنة) لمقارنة الأحجام المختلفة")
 logy = st.checkbox("مقياس لوغاريتمي", value=False)
 show_out = st.checkbox("إظهار القيم الشاذة (IQR)", value=False)
-H = st.slider("🔮 مدى التنبؤ (سنوات)", 1, 10, 5)
+T = st.slider("🔮 سنة الهدف للتنبؤ", 2026, 2035, 2030)
 
 
 def method_for(c):
@@ -519,17 +512,17 @@ G = max(int(s.index[-1]) for s in series.values())
 
 
 @st.cache_data(show_spinner="⏳ جاري حساب توقعات كل الدول...")
-def all_forecasts(m, egy, h_years=5):
+def all_forecasts(m, egy, end_year=2030):
     res = {}
     for c, s in series.items():
         last = int(s.index[-1])
-        res[c] = pd.Series(forecast(s, h_years, egy if c == EGYPT else m), index=np.arange(last + 1, last + 1 + h_years))
+        res[c] = pd.Series(forecast(s, end_year - last, egy if c == EGYPT else m), index=np.arange(last + 1, end_year + 1))
     return res
 
 
 if all_mode:
     names = [c for c in series if meta[c]["country"]]
-    fa = all_forecasts(method, egy_key, h_years=H)
+    fa = all_forecasts(method, egy_key, T)
  
     def val(c, y):
         s = series[c]
@@ -539,7 +532,7 @@ if all_mode:
             return float(s.loc[y])
         return float(fa[c].iloc[min(y - int(s.index[-1]), len(fa[c])) - 1])
  
-    yrs, TOP = list(range(2000, 2031)), 12
+    yrs, TOP = list(range(2000, T + 1)), 12
     colr = {c: f"hsl({i * 47 % 360},75%,50%)" for i, c in enumerate(names)}
     frames, xmax = [], 1.0
     for y in yrs:
@@ -571,14 +564,14 @@ if all_mode:
     for c in names:
         s, f = series[c], fa[c]
         rows.append({"الدولة": f"{flag(meta[c]['iso'])} {c}", f"آخر قيمة ({int(s.index[-1])})": s.iloc[-1],
-                     "المتوقع 2030": f.iloc[-1], "التغير %": 100 * (f.iloc[-1] / s.iloc[-1] - 1),
+                     f"المتوقع {T}": f.iloc[-1], "التغير %": 100 * (f.iloc[-1] / s.iloc[-1] - 1),
                      "نمو سنوي %": 100 * ((f.iloc[-1] / s.iloc[-1]) ** (1 / len(f)) - 1)})
     allt = pd.DataFrame(rows).set_index("الدولة")
     a, b = st.columns(2)
-    a.subheader("🚀 الأسرع نمواً حتى 2030")
+    a.subheader(f"🚀 الأسرع نمواً حتى {T}")
     a.dataframe(allt.sort_values("نمو سنوي %", ascending=False).head(10).round(2), use_container_width=True)
-    b.subheader("🏆 الأعلى استهلاكاً في 2030")
-    b.dataframe(allt.sort_values("المتوقع 2030", ascending=False).head(10).round(2), use_container_width=True)
+    b.subheader(f"🏆 الأعلى استهلاكاً في {T}")
+    b.dataframe(allt.sort_values(f"المتوقع {T}", ascending=False).head(10).round(2), use_container_width=True)
     st.subheader("📋 كل الدول")
     st.dataframe(allt.round(2), use_container_width=True)
     st.download_button("📄 تصدير كل الدول CSV", allt.to_csv().encode("utf-8-sig"), "all_countries_forecast.csv", "text/csv")
@@ -591,7 +584,10 @@ if not selected:
 col = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate(selected)}
 method_name = " + ".join(dict.fromkeys(LABELS[method_for(c)] for c in selected))
 unit = "المؤشر (100 = أول سنة)" if normed else "الاستهلاك (TWh)"
-fut = {c: pd.Series(forecast(series[c], H, method_for(c)), index=series[c].index[-1] + np.arange(1, H + 1)) for c in selected}
+fut = {}
+for c in selected:
+    h = T - int(series[c].index[-1])
+    fut[c] = pd.Series(forecast(series[c], h, method_for(c)), index=series[c].index[-1] + np.arange(1, h + 1))
 if len(selected) <= 4:
     for cc, c in zip(st.columns(len(selected)), selected):
         s, f = series[c], fut[c]
@@ -599,7 +595,7 @@ if len(selected) <= 4:
             st.markdown(f"### {flag(meta[c]['iso']) if c not in REGIONS else '🌍'} {c}")
             st.metric(f"آخر قيمة فعلية ({int(s.index[-1])})", f"{s.iloc[-1]:,.1f} TWh")
             st.metric(f"المتوقع ({int(f.index[-1])})", f"{f.iloc[-1]:,.1f} TWh", f"{100 * (f.iloc[-1] / s.iloc[-1] - 1):+.1f}%")
-            st.metric("النمو السنوي المتوقع", f"{100 * ((f.iloc[-1] / s.iloc[-1]) ** (1 / H) - 1):+.2f}%")
+            st.metric("النمو السنوي المتوقع", f"{100 * ((f.iloc[-1] / s.iloc[-1]) ** (1 / len(f)) - 1):+.2f}%")
  
 t1, t2, t3, t4, t5 = st.tabs(["📊 الاستهلاك التاريخي", "🎯 الفعلي مقابل المتوقع", "🏆 مقارنة الطرق",
                               "🔮 التوقعات المستقبلية", "📥 التصدير"])
@@ -720,7 +716,7 @@ with t4:
         k = 100 / base if normed else 1
         if len(selected) == 1 and hold[c] is not None:
             sg = np.sqrt(np.mean(np.log(hold[c][0] / hold[c][1]) ** 2))
-            w = np.exp(1.645 * sg * np.sqrt(np.arange(1, H + 1)))
+            w = np.exp(1.645 * sg * np.sqrt(np.arange(1, len(f) + 1)))
             fig.add_trace(go.Scatter(x=f.index, y=f.values * w * k, line=dict(width=0), showlegend=False))
             fig.add_trace(go.Scatter(x=f.index, y=f.values / w * k, fill="tonexty", line=dict(width=0),
                                      name="مجال تقريبي 90%", fillcolor="rgba(13,71,161,0.15)"))
@@ -729,22 +725,23 @@ with t4:
                                  line=dict(color=col[c], width=3, dash="dash")))
         if c == EGYPT and egy_key == EGY_AVG:
             for mk in EGY_MODELS:
-                fm = forecast(series[c], H, mk)
+                fm = forecast(series[c], len(f), mk)
                 fig.add_trace(go.Scatter(x=[s.index[-1], *f.index], y=[s.iloc[-1] * k, *(fm * k)], name=f"مصر - {mk}",
                                          line=dict(width=1.8, dash="dot")))
     st.plotly_chart(style(fig, f"التنبؤ للسنوات القادمة - {method_name}", unit, logy), use_container_width=True)
  
-    tbl = pd.DataFrame(fut)
+    yrs_t = range(max(int(s_.index[-1]) for s_ in series.values()), T + 1)
+    tbl = pd.DataFrame({c: pd.concat([series[c], fut[c]]).reindex(yrs_t) for c in selected})
     tbl.index.name = "السنة"
     st.subheader("📋 قيم التنبؤ (TWh)")
     st.dataframe(tbl.round(2), use_container_width=True)
     chg = pd.DataFrame({"آخر قيمة فعلية": {c: series[c].iloc[-1] for c in selected},
-                        f"المتوقع بعد {H} سنة": {c: fut[c].iloc[-1] for c in selected}})
+                        f"المتوقع في {T}": {c: fut[c].iloc[-1] for c in selected}})
     chg["التغير %"] = 100 * (chg.iloc[:, 1] / chg.iloc[:, 0] - 1)
-    chg["نمو سنوي %"] = 100 * ((chg.iloc[:, 1] / chg.iloc[:, 0]) ** (1 / H) - 1)
+    chg["نمو سنوي %"] = [100 * ((fut[c].iloc[-1] / series[c].iloc[-1]) ** (1 / len(fut[c])) - 1) for c in chg.index]
     bar = go.Figure(go.Bar(x=chg.index, y=chg["التغير %"], marker_color=[col[c] for c in chg.index],
                            text=chg["التغير %"].round(1).astype(str) + "%", textposition="outside"))
-    st.plotly_chart(style(bar, f"نسبة التغير المتوقعة بعد {H} سنوات", "%").update_layout(xaxis_title="", hovermode="closest"),
+    st.plotly_chart(style(bar, f"نسبة التغير المتوقعة حتى {T}", "%").update_layout(xaxis_title="", hovermode="closest"),
                     use_container_width=True)
     st.dataframe(chg.round(2), use_container_width=True)
     st.caption("⚠️ التنبؤ امتداد إحصائي للاتجاه التاريخي، ولا يتضمن سياسات أو صدمات مستقبلية. الدقة تقل مع طول المدى.")
@@ -774,3 +771,4 @@ with t5:
     except ImportError:
         st.caption("ثبّت openpyxl لتصدير Excel:  pip install openpyxl")
     card(False)
+ 
