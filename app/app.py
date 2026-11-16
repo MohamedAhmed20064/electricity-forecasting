@@ -276,7 +276,7 @@ def build(d):
     for c, g in d.groupby("country"):
         s = pd.Series(g["load"].values.astype(float), index=g["year"].values).sort_index()
         s = s[s > 0]
-        if s.empty:
+        if s.empty or s.max() < 1.0:
             continue
         br = np.where(np.diff(s.index.values) > 1)[0]
         s = s.iloc[br[-1] + 1:] if len(br) else s
@@ -613,6 +613,26 @@ with t1:
                 oy = o["load"].values / (s.iloc[0] if normed else 1) * (100 if normed else 1)
                 fig.add_trace(go.Scatter(x=o["year"], y=oy, mode="markers", name=f"شاذة: {c}",
                                          marker=dict(color="#b71c1c", size=9, symbol="circle-open", line=dict(width=2))))
+       # 🔍 كاشف الصدمات التاريخية لكل الدول
+        y_vals = norm(s) if normed else s
+        pct_chg = y_vals.pct_change().dropna()
+        if not pct_chg.empty:
+            max_yr, min_yr = pct_chg.idxmax(), pct_chg.idxmin()
+            global_events = {2009: "الأزمة المالية", 2020: "أزمة كورونا", 2021: "تعافي بعد كورونا", 2022: "أزمة الطاقة"}
+            egypt_events = {2014: "أزمة الطاقة", 2018: "محطات سيمنز"}
+            
+            points = [(max_yr, f"📈 قفزة {pct_chg[max_yr]*100:+.1f}%", "#57c785"),
+                      (min_yr, f"📉 تراجع {pct_chg[min_yr]*100:+.1f}%", "#ef4444")]
+            # إضافة أزمة كورونا 2020 تلقائياً لو حصل فيها انخفاض ومكانتش هي أقل سنة
+            if 2020 in pct_chg.index and min_yr != 2020 and pct_chg[2020] < 0:
+                points.append((2020, f"📉 {pct_chg[2020]*100:+.1f}%", "#f97316"))
+
+            for yr, lbl, clr in points:
+                ev = egypt_events.get(yr) if c == EGYPT and yr in egypt_events else global_events.get(yr, "")
+                note = f" ({ev})" if ev else ""
+                fig.add_annotation(x=yr, y=y_vals.loc[yr], text=f"{lbl}{note}", showarrow=True,
+                                   arrowhead=2, arrowcolor=clr, font=dict(color=clr, size=11, weight="bold"),
+                                   bgcolor="rgba(2,0,36,0.8)", bordercolor=clr, borderwidth=1)
     st.plotly_chart(style(fig, "سلسلة الاستهلاك التاريخي", unit, logy), use_container_width=True)
     rows = [{"الكيان": c, "من": int(s.index[0]), "إلى": int(s.index[-1]), "أول قيمة": s.iloc[0], "آخر قيمة": s.iloc[-1],
              "أعلى قيمة": s.max(), "نمو سنوي مركب %": 100 * ((s.iloc[-1] / s.iloc[0]) ** (1 / (len(s) - 1)) - 1)}
@@ -729,6 +749,32 @@ with t4:
                 fig.add_trace(go.Scatter(x=[s.index[-1], *f.index], y=[s.iloc[-1] * k, *(fm * k)], name=f"مصر - {mk}",
                                          line=dict(width=1.8, dash="dot")))
     st.plotly_chart(style(fig, f"التنبؤ للسنوات القادمة - {method_name}", unit, logy), use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("⚡ محاكي الصدمات واختبار تحمل الشبكة (Stress Test)")
+    sc1, sc2, sc3 = st.columns(3)
+    target_c = sc1.selectbox("اختر الكيان للاختبار:", selected, key="stress_c")
+    shock_yr = sc2.slider("سنة حدوث الصدمة:", int(fut[target_c].index[0]), int(fut[target_c].index[-1]), int(fut[target_c].index[0]))
+    shock_pct = sc3.slider("نسبة الصدمة في الطلب (%):", -20, 30, 12, help="موجب = موجة حر أو طفرة صناعية | سالب = ترشيد طاقة")
+
+    base_f = fut[target_c].copy()
+    shocked_f = base_f.copy()
+    shocked_f.loc[shock_yr:] = shocked_f.loc[shock_yr:] * (1 + shock_pct / 100.0)
+    extra_load = shocked_f.iloc[-1] - base_f.iloc[-1]
+
+    fig_st = go.Figure()
+    fig_st.add_trace(go.Scatter(x=base_f.index, y=base_f.values, name="المسار الطبيعي", line=dict(color="#00d4ff", width=3, dash="dash")))
+    fig_st.add_trace(go.Scatter(x=shocked_f.index, y=shocked_f.values, name=f"سيناريو الصدمة ({shock_pct:+d}%)",
+                                line=dict(color="#ef4444" if shock_pct > 0 else "#57c785", width=3.5), fill="tonexty",
+                                fillcolor="rgba(239, 68, 68, 0.15)" if shock_pct > 0 else "rgba(87, 199, 133, 0.15)"))
+    st.plotly_chart(style(fig_st, f"اختبار التحمل: {target_c} عند صدمة {shock_pct:+d}% في {shock_yr}", "الاستهلاك (TWh)"), use_container_width=True)
+
+    if shock_pct >= 15:
+        st.error(f"🔴 **حالة ضغط حرج على الشبكة:** يتطلب توفير قدرة إضافية بمقدار **{extra_load:+,.1f} TWh** بحلول {T} لتجنب تخفيف الأحمال.")
+    elif shock_pct > 0:
+        st.warning(f"🟡 **ضغط متوسط:** زيادة متوقعة بمقدار **{extra_load:+,.1f} TWh** بحلول {T} تستدعي رفع كفاءة التوليد.")
+    else:
+        st.success(f"🟢 **وفر في الطاقة:** تحقيق وفر بمقدار **{abs(extra_load):,.1f} TWh** بحلول {T} يقلل الانبعاثات وتكلفة الوقود.")
  
     yrs_t = range(max(int(s_.index[-1]) for s_ in series.values()), T + 1)
     tbl = pd.DataFrame({c: pd.concat([series[c], fut[c]]).reindex(yrs_t) for c in selected})
@@ -770,5 +816,77 @@ with t5:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
     except ImportError:
         st.caption("ثبّت openpyxl لتصدير Excel:  pip install openpyxl")
+    st.markdown("---")
+    st.subheader("📑 التقرير التنفيذي الشامل (PDF)")
+
+    # 1. جدول ملخص التوقعات والنمو
+    rows_html = "".join(
+        f"<tr><td><b>{c}</b></td><td>{chg.loc[c].iloc[0]:,.2f}</td><td>{chg.loc[c].iloc[1]:,.2f}</td>"
+        f"<td style='color:{'#16a34a' if chg.loc[c,'التغير %']>=0 else '#dc2626'};font-weight:bold'>{chg.loc[c,'التغير %']:+.2f}%</td>"
+        f"<td>{chg.loc[c,'نمو سنوي %']:+.2f}%</td></tr>" for c in chg.index
+    )
+
+    # 2. جدول التوقعات التفصيلي سنة بسنة
+    yearly_headers = "".join(f"<th>{c}</th>" for c in tbl.columns)
+    yearly_rows = "".join(
+        f"<tr><td><b>{yr}</b></td>" + "".join(
+            f"<td>{tbl.loc[yr, c]:,.2f}</td>" if pd.notna(tbl.loc[yr, c]) else "<td>—</td>"
+            for c in tbl.columns
+        ) + "</tr>" for yr in tbl.index
+    )
+
+    # 3. تقييم دقة النماذج
+    best_notes = ""
+    if roll:
+        best_notes = "<ul>" + "".join(
+            f"<li>أفضل نموذج لـ <b>{c}</b>: {min(r, key=r.get)} (نسبة خطأ sMAPE = {min(r.values()):.2f}%)</li>"
+            for c, r in roll.items()
+        ) + "</ul>"
+
+    # 4. تحويل الرسم البياني للتوقعات إلى رسم تفاعلي/مضمن داخل التقرير
+    fig_rep = go.Figure()
+    for c in selected:
+        s_r, f_r = series[c].iloc[-10:], fut[c]
+        fig_rep.add_trace(go.Scatter(x=s_r.index, y=s_r.values, name=f"{c} (فعلي)", line=dict(color=col[c], width=2.5)))
+        fig_rep.add_trace(go.Scatter(x=[s_r.index[-1], *f_r.index], y=[s_r.iloc[-1], *f_r.values],
+                                     name=f"{c} (توقع)", line=dict(color=col[c], width=2.5, dash="dash")))
+    fig_rep.update_layout(title="مسار الاستهلاك التاريخي والتنبؤ المستقبلي (TWh)", template="plotly_white",
+                          height=400, margin=dict(l=20, r=20, t=50, b=20))
+    chart_html = fig_rep.to_html(full_html=False, include_plotlyjs="cdn")
+
+    report_html = f"""<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8">
+    <title>تقرير التنبؤ باستهلاك الكهرباء</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body{{font-family:'Cairo',sans-serif;padding:30px;background:#f8fafc;color:#0f172a}}
+        .box{{background:linear-gradient(135deg,#020024,#090979);color:#fff;padding:24px;border-radius:12px;text-align:center}}
+        .card{{background:#fff;padding:20px;border-radius:10px;margin-top:20px;border:1px solid #e2e8f0;page-break-inside:avoid}}
+        table{{width:100%;border-collapse:collapse;margin-top:12px}}
+        th,td{{border:1px solid #cbd5e1;padding:9px;text-align:center}}
+        th{{background:#090979;color:#fff}}
+        @media print{{.no-print{{display:none}} body{{padding:0;background:#fff}}}}
+    </style></head><body>
+    <div class="box"><h1>⚡ التقرير التنفيذي للتنبؤ باستهلاك الكهرباء حتى {T}</h1>
+    <p>الكيانات المشمولة ({len(selected)}): {' ، '.join(selected)} | المنهجية: {method_name}</p></div>
+
+    <div class="card"><h2>📊 أولاً: ملخص التوقعات ومعدلات النمو (TWh)</h2>
+    <table><thead><tr><th>الكيان</th><th>آخر قيمة فعلية</th><th>المتوقع في {T}</th><th>التغير %</th><th>النمو السنوي %</th></tr></thead>
+    <tbody>{rows_html}</tbody></table></div>
+
+    <div class="card"><h2>📈 ثانياً: الرسم البياني للتوقعات المستقبلية</h2>{chart_html}</div>
+
+    <div class="card"><h2>📅 ثالثاً: جدول التوقعات التفصيلي سنة بسنة (TWh)</h2>
+    <table><thead><tr><th>السنة</th>{yearly_headers}</tr></thead>
+    <tbody>{yearly_rows}</tbody></table></div>
+
+    <div class="card"><h2>🏆 رابعاً: تقييم دقة النماذج (Rolling Backtesting)</h2>{best_notes}</div>
+
+    <div style="text-align:center;margin-top:25px" class="no-print">
+    <button onclick="window.print()" style="padding:12px 28px;background:#090979;color:#fff;border:none;border-radius:8px;font-family:'Cairo';font-size:16px;cursor:pointer">
+    🖨️ حفظ التقرير الشامل بصيغة PDF</button></div></body></html>"""
+
+    st.download_button("📄 تحميل التقرير التنفيذي الشامل (PDF)", report_html.encode("utf-8"),
+                       file_name=f"Electricity_Full_Report_{T}.html", mime="text/html", use_container_width=True)
     card(False)
+    
  
